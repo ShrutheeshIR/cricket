@@ -234,6 +234,43 @@ struct {{name}}
 
         return to_isometry(y.data());
     }
+
+    static inline auto tsr_function(const std::array<float, {{n_q + 7 + 7 + 6 + 6}}> &x, std::array<float, {{tsr_error_function_code_output}}> &y) noexcept
+    {
+        std::array<float, {{tsr_error_function_code_vars}}> v;
+        
+        {{tsr_error_function_code}}
+
+    }
+
+    template <typename InputVector, typename OutputVector>
+    static inline auto tsr_function_jac(const InputVector &x, OutputVector &out) noexcept
+    {
+        FloatVector<8, {{tsr_error_function_code_vars}}> v;
+        FloatVector<8, {{tsr_error_function_code_output}}> y;
+        {{tsr_error_function_code}}
+
+        for(auto i=0U;i<{{tsr_error_function_code_output}};i++)
+            out[i] = y[i];
+
+    }
+
+    template <typename InputVector, typename OutputVector>
+    static inline auto solve_tsr_function(const InputVector &x, OutputVector &out) noexcept
+    {
+        FloatVector<8, {{solve_tsr_function_code_vars}}> v;
+        FloatVector<8, {{solve_tsr_function_code_output}}> y;
+        {{solve_tsr_function_code}}
+
+        for(auto i=0U;i<{{solve_tsr_function_code_output}};i++)
+            out[i] = y[i];
+
+    }
+
+
+
+
+
 };
 }
 

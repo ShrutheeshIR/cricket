@@ -38,6 +38,7 @@ using ADCG = AD<CGD>;
 using ADModel = ModelTpl<ADCG>;
 using ADData = DataTpl<ADCG>;
 using ADVectorXs = Eigen::Matrix<ADCG, Eigen::Dynamic, 1>;
+using ADMatrixXs = Eigen::Matrix<ADCG, Eigen::Dynamic, Eigen::Dynamic>;
 
 struct SphereInfo
 {
@@ -532,6 +533,219 @@ auto trace_sphere_cc_fk(
     return Traced{function_code.str(), handler.getTemporaryVariableCount(), n_out};
 }
 
+
+auto trace_tsr_error_function(
+    const RobotInfo &info
+    ) -> Traced
+{
+
+    const double DT = 0.1;
+    const double damp = 1e-6;
+    auto nq = info.model.nq;
+    auto nv = info.model.nv;
+    const size_t nt = 6; // task space is se3
+    // const size_t ntnt = 16; // for 4x4 matrix
+
+    ADModel ad_model = info.model.cast<ADCG>();
+    ADData ad_data(ad_model);
+
+    // Total inputs is:
+    // 2 * 4x4 matrices for constraint space
+    // 2 * 6 bounds for constraint space
+    // nq  for configuration space 
+    const size_t num_inp = 7 * 2 + nt * 2 + nq;
+
+
+    ADVectorXs ad_inp(num_inp); // 3 4x4 matrices
+    for (auto i = 0U; i < num_inp; ++i)
+        ad_inp[i] = ADCG(0.0);
+
+    Independent(ad_inp);
+
+    Eigen::Vector3<ADCG> rTep;
+    Eigen::Vector3<ADCG> wTrp;
+
+    ADVectorXs lb(nt);
+    ADVectorXs ub(nt);
+    ADVectorXs ad_q(nq);
+
+
+    // Copying inputs from ad_inp into individual matrices
+    for (auto i = 0U; i < nq; i++)
+        ad_q[i] = ad_inp[i]; // This is the first 7 vars for nq
+
+
+    Eigen::Quaternion<ADCG> rTeq(ad_inp[nq + 0 + 0], ad_inp[nq + 0 + 1], ad_inp[nq + 0 + 2], ad_inp[nq + 0 + 3]); // Next 7 for rTe
+    Eigen::Quaternion<ADCG> wTrq(ad_inp[nq + 7 + 0], ad_inp[nq + 7 + 1], ad_inp[nq + 7 + 2], ad_inp[nq + 7 + 3]); // 7 after that for wTr
+
+
+    for (auto i=0U; i < 3; i++)
+    {
+        rTep[i] = ad_inp[nq + 4 + i];
+        wTrp[i] = ad_inp[nq + 7 + 4 + i];
+    }
+
+
+    for (auto i = 0U; i < nt; i++)
+    {
+        lb[i] = ad_inp[nq +  2 * 7 + i];
+        ub[i] = ad_inp[nq + 2 * 7 + nt + i];
+    }
+
+    SE3Tpl<ADCG, 0> rTe (rTeq, rTep); // it is assumed that this err is expressed in the eef joint frame 
+    SE3Tpl<ADCG, 0> wTr (wTrq, wTrp);  
+    // input setup done
+
+
+    forwardKinematics(ad_model, ad_data, ad_q);
+    updateFramePlacements(ad_model, ad_data);
+
+
+    // compute error term
+    const auto wTobj = ad_data.oMf[info.end_effector_index] * rTe.inverse();
+    const auto rTobj = wTr.inverse() * wTobj;
+
+
+    ADVectorXs displacement(nt);
+    displacement.setZero();
+    Eigen::AngleAxis<ADCG> aa_error; //(rTobj.rotation_impl());
+    displacement << rTobj.translation_impl(), aa_error.axis() * aa_error.angle();
+
+
+    std::size_t n_out = nt;
+    ADVectorXs data(n_out);
+    for (auto i = 0U; i < nt; i++)
+        // data[i] = min(displacement[i] - lb[i], displacement[i] * 0.) + max(displacement[i] - ub[i], displacement[i] * 0.);
+        data[i] = displacement[i];
+
+
+
+    // Create the AD function
+    ADFun<CGD> jacobian_error_func(ad_inp, data);
+    CodeHandler<double> handler;
+    CppAD::vector<CGD> ind_vars(num_inp);
+    handler.makeVariables(ind_vars);
+
+    CppAD::vector<CGD> result = jacobian_error_func.Forward(0, ind_vars);
+
+    CppAD::vector<CGD> jacobian_ind_vars(num_inp);
+
+    for (auto i=0U; i < num_inp; i++)
+    {
+        if (i < nq)
+            jacobian_ind_vars[i] = ind_vars[i];
+        else
+            jacobian_ind_vars[i] = ind_vars[i] * 0.0;
+    }
+    
+    std::cout << "Computing jacobian " << std::endl;
+    CppAD::vector<CGD> jac = jacobian_error_func.Jacobian(jacobian_ind_vars);
+    std::cout << "Computed jacobian " << std::endl;
+
+    CppAD::vector<CGD> jac_e_q(n_out * nq);
+
+    for(auto i=0U; i < n_out; i++)
+    {
+        for(auto j=0U; j < nq; j++)
+        {
+            jac_e_q[i * nq + j] = jac[i * num_inp + j];
+        }
+    }
+
+
+    std::cout << "Copied jacobian " << std::endl;
+    // std::move(jac_e_q.begin(), jac_e_q.end(), std::back_inserter(result));
+    std::move(result.begin(), result.end(), std::back_inserter(jac_e_q));
+
+
+    LanguageCCustom<double> langC("double");
+    LangCDefaultVariableNameGenerator<double> nameGen;
+
+    std::ostringstream function_code;
+    handler.generateCode(function_code, langC, jac_e_q, nameGen);
+
+    return Traced{function_code.str(), handler.getTemporaryVariableCount(), jac_e_q.size()};
+}
+
+
+auto trace_solve_tsr_function(
+    const RobotInfo &info
+    ) -> Traced
+{
+
+    const double DT = 0.1;
+    const double damp = 1e-6;
+    auto nq = info.model.nq;
+    auto nv = info.model.nv;
+    const size_t nt = 6; // task space is se3
+
+
+    const size_t num_inp = nt + nt * nq;
+    ADVectorXs ad_inp(num_inp); // 3 4x4 matrices
+    for (auto i = 0U; i < num_inp; ++i)
+        ad_inp[i] = ADCG(0.0);
+
+    Independent(ad_inp);
+
+    ADVectorXs ad_e(nt);
+    ADMatrixXs ad_J(nt, nq);
+
+    // Copying inputs from ad_inp into individual matrices
+    for (auto i = 0U; i < nt; i++)
+        ad_e[i] = ad_inp[i]; // This is the first 7 vars for nq
+
+    // Copying inputs from ad_inp into individual matrices
+    ad_J = Eigen::Map<ADMatrixXs>(&ad_inp[nt], nt, nq);
+
+    ADVectorXs grad(nq);
+    // ADMatrixXs decomposed(nt, nt);
+    auto decomposed = (ad_J * ad_J.transpose()).ldlt().matrixLDLT();
+    std::size_t n_out = nt * nt;
+    ADVectorXs data(n_out);
+
+
+    // grad = ad_J.transpose() * (ad_J * ad_J.transpose()).llt().solve(ad_e);
+
+    // std::size_t n_out = nt * nt;
+    // ADVectorXs data(n_out);
+
+    for (auto i = 0U; i < nt; i++)
+        for (auto j = 0U; j < nt; j++)
+            data[i * nt + j] = decomposed(i, j);
+
+    // Create the AD function
+    ADFun<CGD> solve_func(ad_inp, data);
+    CodeHandler<double> handler;
+    CppAD::vector<CGD> ind_vars(num_inp);
+    handler.makeVariables(ind_vars);
+
+    CppAD::vector<CGD> result = solve_func.Forward(0, ind_vars);
+
+
+    LanguageCCustom<double> langC("double");
+    LangCDefaultVariableNameGenerator<double> nameGen;
+
+    std::ostringstream function_code;
+    handler.generateCode(function_code, langC, result, nameGen);
+
+    return Traced{function_code.str(), handler.getTemporaryVariableCount(), result.size()};
+}
+
+
+// if\s*\(\s*(v\[\d+\])\s*<\s*([0-9]*\.?[0-9]*)\s*\)\n\s*\{\s*\1\s*=\s*\2;\n\s*\}\n\s*else\s*\n\s*\{\s*\1\s*=\s*\1;\n\s*\} --> $1 = max($1, $2);
+// if\s*\(\s*([0-9]*\.?[0-9]*)\s*<\s*(v\[\d+\])\s*\)\n\s*\{\s*\2\s*=\s*\1;\n\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*\2;\n\s*\} --> $2 = min($2, $1);
+
+// for minmax 
+// if\s*\(\s*(v\[\d+\])\s*<\s*([0-9]*\.?[0-9]*)\s*\)\n\s*\{\s*\1\s*=\s*\2;\n\s*\}\n\s*else\s*\n\s*\{\s*\1\s*=\s*([0-9]*\.?[0-9]*);\n\s*\} --> $1 = max($2, min($1, $3));
+// if\s*\(\s*([0-9]*\.?[0-9]*)\s*<\s*(v\[\d+\])\s*\)\n\s*\{\s*\2\s*=\s*\1;\n\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*([0-9]*\.?[0-9]*);\n\s*\} --> $2 = min(max($2, $3), $1);
+
+
+// for generic
+// if\s*\((.*?)\)\n\s*\{\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*(.*?);\s*\} --> $2 = ($1) ? $3 : $4;
+// if\s*\(\s*(.*?)\s*<\s*(.*?)\s*\)\s*\{\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*(.*?);\s*\} --> $3 = ($1 < $2) ? $4 : $5;
+
+// $
+
 int main(int argc, char **argv)
 {
     cxxopts::Options options(argv[0], "Tracing compiler for forward kinematics and collision checking");
@@ -621,6 +835,17 @@ int main(int argc, char **argv)
     data["ccfkee_code"] = traced_ccfkee_code.code;
     data["ccfkee_code_vars"] = traced_ccfkee_code.temp_variables;
     data["ccfkee_code_output"] = traced_ccfkee_code.outputs;
+
+    auto traced_tsr_error_function_code  = trace_tsr_error_function(robot);
+    data["tsr_error_function_code"] = traced_tsr_error_function_code.code;
+    data["tsr_error_function_code_vars"] = traced_tsr_error_function_code.temp_variables;
+    data["tsr_error_function_code_output"] = traced_tsr_error_function_code.outputs;
+
+    auto traced_solve_tsr_function_code  = trace_solve_tsr_function(robot);
+    data["solve_tsr_function_code"] = traced_solve_tsr_function_code.code;
+    data["solve_tsr_function_code_vars"] = traced_solve_tsr_function_code.temp_variables;
+    data["solve_tsr_function_code_output"] = traced_solve_tsr_function_code.outputs;
+
 
     inja::Environment env;
 
