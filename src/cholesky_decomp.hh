@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
 
@@ -21,20 +20,20 @@ Matrix cholesky_factor(const Matrix& input)
         scalar_type value = input(i, i);
         for (size_t j = 0; j < i; ++j)
             value -= result(i, j) * result(i, j);
-        result(i, i) = std::sqrt(value);
+        result(i, i) = sqrt(value);
     }
     return result;
 }
 
 template <typename Matrix, typename Vector, typename scalar_type>
-Vector cholesky_solve(const Matrix& A, const Vector& b)
+Vector cholesky_solve(const Matrix& A, const Vector& B)
 {
-    size_t n = input.rows();
+    size_t n = B.rows();
     Vector result(n);
 
     for (size_t i = 0; i < n; ++i)
     {
-        auto value = b(i);
+        auto value = B(i);
         for (size_t j = 0; j  < n; ++j)
             value -= A(i, j) * B(j);
         result(i) = value / A(i, i);

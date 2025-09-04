@@ -1,4 +1,5 @@
 #include "pinocchio_cppadcg.hh"
+#include "cholesky_decomp.hh"
 
 #include <pinocchio/parsers/urdf.hpp>
 #include <pinocchio/parsers/srdf.hpp>
@@ -692,16 +693,23 @@ auto trace_solve_tsr_function(
 
     // Copying inputs from ad_inp into individual matrices
     for (auto i = 0U; i < nt; i++)
-        ad_e[i] = ad_inp[i]; // This is the first 7 vars for nq
+        ad_e[i] = ad_inp[i + nt * nq]; // This is the first 7 vars for nq
 
     // Copying inputs from ad_inp into individual matrices
-    ad_J = Eigen::Map<ADMatrixXs>(&ad_inp[nt], nt, nq);
+    ad_J = Eigen::Map<ADMatrixXs>(&ad_inp[0], nt, nq);
 
     ADVectorXs grad(nq);
+    ADMatrixXs identity(nt, nt);
+    identity.setIdentity();
     // ADMatrixXs decomposed(nt, nt);
-    auto decomposed = (ad_J * ad_J.transpose()).ldlt().matrixLDLT();
-    std::size_t n_out = nt * nt;
+    // auto decomposed = (ad_J * ad_J.transpose()).ldlt().matrixLDLT();
+    auto decomposed = cholesky_factor<ADMatrixXs, ADCG>(ad_J * ad_J.transpose() + identity * 1e-4);
+    grad = ad_J.transpose() * cholesky_solve<ADMatrixXs, ADVectorXs, ADCG>(decomposed, ad_e);
+    std::size_t n_out = nq;
     ADVectorXs data(n_out);
+
+    for (auto i = 0U; i < nq; i++)
+        data[i] = grad(i);
 
 
     // grad = ad_J.transpose() * (ad_J * ad_J.transpose()).llt().solve(ad_e);
@@ -709,9 +717,9 @@ auto trace_solve_tsr_function(
     // std::size_t n_out = nt * nt;
     // ADVectorXs data(n_out);
 
-    for (auto i = 0U; i < nt; i++)
-        for (auto j = 0U; j < nt; j++)
-            data[i * nt + j] = decomposed(i, j);
+    // for (auto i = 0U; i < nt; i++)
+    //     for (auto j = 0U; j < nt; j++)
+    //         data[i * nt + j] = decomposed(i, j);
 
     // Create the AD function
     ADFun<CGD> solve_func(ad_inp, data);
