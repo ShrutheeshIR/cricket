@@ -244,18 +244,6 @@ struct {{name}}
     }
 
     template <typename InputVector, typename OutputVector>
-    static inline auto tsr_function_jac(const InputVector &x, OutputVector &out) noexcept
-    {
-        FloatVector<8, {{tsr_error_function_code_vars}}> v;
-        FloatVector<8, {{tsr_error_function_code_output}}> y;
-        {{tsr_error_function_code}}
-
-        for(auto i=0U;i<{{tsr_error_function_code_output}};i++)
-            out[i] = y[i];
-
-    }
-
-    template <typename InputVector, typename OutputVector>
     static inline auto solve_tsr_function(const InputVector &x, OutputVector &out) noexcept
     {
         FloatVector<8, {{solve_tsr_function_code_vars}}> v;
@@ -267,6 +255,17 @@ struct {{name}}
 
     }
 
+    template <typename InputVector, typename OutputVector>
+    static inline auto full_tsr_project(const InputVector &x, OutputVector &out) noexcept
+    {
+        FloatVector<8, {{trace_full_tsr_project_code_vars}}> v;
+        FloatVector<8, {{trace_full_tsr_project_code_output}}> y;
+        {{trace_full_tsr_project_code}}
+
+        for(auto i=0U;i<{{trace_full_tsr_project_code_output}};i++)
+            out[i] = y[i];
+
+    }
 
 
 

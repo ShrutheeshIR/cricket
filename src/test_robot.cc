@@ -1,5 +1,12 @@
-#include "pinocchio_cppadcg.hh"
 #include "cholesky_decomp.hh"
+#include "pinocchio/math/fwd.hpp"
+
+#include <cmath>
+#include <boost/mpl/int.hpp>
+// #include <cppad/cg/support/cppadcg_eigen.hpp>
+
+#include "pinocchio/autodiff/cppad.hpp"
+
 
 #include <pinocchio/parsers/urdf.hpp>
 #include <pinocchio/parsers/srdf.hpp>
@@ -16,24 +23,25 @@
 #include <CGAL/Min_sphere_of_spheres_d.h>
 #include <CGAL/Min_sphere_of_spheres_d_traits_3.h>
 
+
+
 #include <fmt/core.h>
 #include <nlohmann/json.hpp>
-#include <inja/inja.hpp>
+// #include <inja/inja.hpp>
 #include <cxxopts.hpp>
 
 #include <filesystem>
 #include <stdexcept>
 #include <vector>
 #include <optional>
-
-#include "lang_gen.hh"
+// #include "lang_gen.hh"
 
 using namespace pinocchio;
 using namespace CppAD;
-using namespace CppAD::cg;
+// using namespace CppAD::cg;
 
 // Typedef for AD types
-using CGD = CG<double>;
+using CGD = double;
 using ADCG = AD<CGD>;
 
 using ADModel = ModelTpl<ADCG>;
@@ -414,130 +422,11 @@ struct RobotInfo
     std::vector<std::size_t> bounding_sphere_index;
 };
 
-auto trace_sphere(const SphereInfo &sphere, const ADData &ad_data, ADVectorXs &data, std::size_t index)
-{
-    const auto &joint_placement = ad_data.oMi[sphere.parent_joint];
 
-    Eigen::Matrix<ADCG, 3, 1> local_translation;
-    local_translation[0] = sphere.relative.translation()[0];
-    local_translation[1] = sphere.relative.translation()[1];
-    local_translation[2] = sphere.relative.translation()[2];
-
-    Eigen::Matrix<ADCG, 3, 1> world_position =
-        joint_placement.rotation() * local_translation + joint_placement.translation();
-
-    data[index + 0] = world_position[0];
-    data[index + 1] = world_position[1];
-    data[index + 2] = world_position[2];
-    data[index + 3] = ADCG(sphere.radius);
-}
-
-auto trace_frame(std::size_t ee_index, const ADData &ad_data, ADVectorXs &data, std::size_t index)
-{
-    const auto &oMf = ad_data.oMf[ee_index];
-
-    data[index + 0] = oMf.translation()[0];
-    data[index + 1] = oMf.translation()[1];
-    data[index + 2] = oMf.translation()[2];
-
-    const auto &R = oMf.rotation();
-
-    // Eigen stores as column major
-    data[index + 3] = R(0, 0);
-    data[index + 4] = R(1, 0);
-    data[index + 5] = R(2, 0);
-    data[index + 6] = R(0, 1);
-    data[index + 7] = R(1, 1);
-    data[index + 8] = R(2, 1);
-    data[index + 9] = R(0, 2);
-    data[index + 10] = R(1, 2);
-    data[index + 11] = R(2, 2);
-}
-
-struct Traced
-{
-    std::string code;
-    std::size_t temp_variables;
-    std::size_t outputs;
-};
-
-auto trace_sphere_cc_fk(
+auto trace_full_tsr_project(
     const RobotInfo &info,
-    bool spheres = true,
-    bool bounding_spheres = true,
-    bool fk = true) -> Traced
-{
-    auto nq = info.model.nq;
-    ADModel ad_model = info.model.cast<ADCG>();
-    ADData ad_data(ad_model);
-
-    ADVectorXs ad_q(nq);
-    for (auto i = 0U; i < nq; ++i)
-    {
-        ad_q[i] = ADCG(0.0);
-    }
-
-    Independent(ad_q);
-
-    forwardKinematics(ad_model, ad_data, ad_q);
-    updateFramePlacements(ad_model, ad_data);
-
-    std::size_t n_spheres_data = (spheres) ? info.spheres.size() * 4 : 0;
-    std::size_t n_bounding_spheres_data = (bounding_spheres) ? info.bounding_spheres.size() * 4 : 0;
-    std::size_t n_fk_data = (fk) ? 12 : 0;
-    std::size_t n_out = n_spheres_data + n_bounding_spheres_data + n_fk_data;
-
-    ADVectorXs data(n_out);
-
-    if (spheres)
-    {
-        for (auto i = 0U; i < info.spheres.size(); ++i)
-        {
-            const auto &sphere = info.spheres[i];
-            trace_sphere(sphere, ad_data, data, sphere.geom_index * 4);
-        }
-    }
-
-    if (bounding_spheres)
-    {
-        for (auto i = 0U; i < info.model.frames.size(); ++i)
-        {
-            auto sphere_it = info.bounding_spheres.find(i);
-            if (sphere_it != info.bounding_spheres.end())
-            {
-                const auto &sphere = sphere_it->second;
-                trace_sphere(sphere, ad_data, data, sphere.geom_index * 4 + n_spheres_data);
-            }
-        }
-    }
-
-    if (fk)
-    {
-        trace_frame(info.end_effector_index, ad_data, data, n_spheres_data + n_bounding_spheres_data);
-    }
-
-    // Create the AD function
-    ADFun<CGD> collision_sphere_func(ad_q, data);
-
-    CodeHandler<double> handler;
-    CppAD::vector<CGD> ind_vars(nq);
-    handler.makeVariables(ind_vars);
-
-    CppAD::vector<CGD> result = collision_sphere_func.Forward(0, ind_vars);
-
-    LanguageCCustom<double> langC("double");
-    LangCDefaultVariableNameGenerator<double> nameGen;
-
-    std::ostringstream function_code;
-    handler.generateCode(function_code, langC, result, nameGen);
-
-    return Traced{function_code.str(), handler.getTemporaryVariableCount(), n_out};
-}
-
-
-auto trace_tsr_error_function(
-    const RobotInfo &info
-    ) -> Traced
+    ADVectorXs ad_inp
+    ) -> CppAD::vector<CGD>
 {
 
     const double DT = 0.1;
@@ -556,10 +445,6 @@ auto trace_tsr_error_function(
     // nq  for configuration space 
     const size_t num_inp = 7 * 2 + nt * 2 + nq;
 
-    ADVectorXs ad_inp(num_inp); // 3 4x4 matrices
-    for (auto i = 0U; i < num_inp; ++i)
-        ad_inp[i] = ADCG(0.0);
-
     Independent(ad_inp);
 
     Eigen::Vector3<ADCG> rTep;
@@ -573,6 +458,10 @@ auto trace_tsr_error_function(
     for (auto i = 0U; i < nq; i++)
         ad_q[i] = ad_inp[i]; // This is the first 7 vars for nq
 
+    // print the q
+    // for (auto i = 0U; i < nq; i++)
+    //     std::cout << ad_q[i] << " ";
+    // std::cout << std::endl;
 
     Eigen::Quaternion<ADCG> rTeq(ad_inp[nq + 0 + 0], ad_inp[nq + 0 + 1], ad_inp[nq + 0 + 2], ad_inp[nq + 0 + 3]); // Next 7 for rTe
     Eigen::Quaternion<ADCG> wTrq(ad_inp[nq + 7 + 0], ad_inp[nq + 7 + 1], ad_inp[nq + 7 + 2], ad_inp[nq + 7 + 3]); // 7 after that for wTr
@@ -595,11 +484,16 @@ auto trace_tsr_error_function(
     SE3Tpl<ADCG, 0> wTr (wTrq, wTrp);  
     // input setup done
 
+    // std::cout << "rteq" << rTeq.coeffs().transpose() << " " << rTep.transpose() << std::endl;
+    // std::cout << "wtrq" << wTrq.coeffs().transpose() << " " << wTrp.transpose() << std::endl;
+
 
     forwardKinematics(ad_model, ad_data, ad_q);
     updateFramePlacements(ad_model, ad_data);
 
-    std::cout << ad_data.oMf[info.end_effector_index] << rTe << std::endl;
+    // std::cout << "rteq = \n" << rTe.toHomogeneousMatrix_impl() << std::endl;
+    // std::cout << "wtrq = \n" << wTr.toHomogeneousMatrix_impl() << std::endl;
+    // std::cout << "eef = \n" << ad_data.oMf[info.end_effector_index].toHomogeneousMatrix_impl() << std::endl;
 
     // compute error term
     const auto wTobj = ad_data.oMf[info.end_effector_index] * rTe.inverse();
@@ -609,378 +503,96 @@ auto trace_tsr_error_function(
 
     const auto rTobj = wTr.inverse() * wTobj;
 
+    // std::cout << "rTobj = \n" << rTobj << std::endl;
+
     ADVectorXs displacement(nt);
     displacement.setZero();
-    displacement << rTobj.translation_impl(), log3(rTobj.rotation_impl());
-    ADCG zero(0.0);
+    displacement << rTobj.translation_impl() * 50.0, log3(rTobj.rotation_impl()) * 20.0;
+    // ADCG zero(0.0);
+
+    // const auto iMd = ad_data.oMf[info.end_effector_index].actInv(wTobj);
+    // std::cout << "oMe = \n" << ad_data.oMf[info.end_effector_index].toHomogeneousMatrix_impl() << std::endl;
+    // std::cout << "iMd = \n" << iMd.toHomogeneousMatrix_impl() << std::endl;
+
+    // auto displacement = log6(iMd); // in joint frame
+    // std::cout << "displacement = " << displacement << std::endl;
+
+    // ADVectorXs displacement(nt);
+    // displacement.setZero();
+    // displacement << iMd.translation_impl(), log3(iMd.rotation_impl());
 
 
     std::size_t n_out = nt;
     ADVectorXs data(n_out);
     for (auto i = 0U; i < nt; i++){
-        // data[i] = CondExpLt(displacement[i], zero, displacement[i] - lb[i], displacement[i] - ub[i]);
-        // data[i] = data[i] + CondExpGt(displacement[i], ub[i], displacement[i] - ub[i], zero);
-        data[i] = displacement[i];// + CondExpGt(displacement[i], ub[i], displacement[i] - ub[i], zero);
+        // ;
+        // data[i] = min(displacement[i] - lb[i], displacement[i] * 1e-6) + max(displacement[i] - ub[i], displacement[i] * 1e-6);
+        data[i] = displacement[i];
+        // std::cout << displacement[i] << " ";
     }
+    // std::cout << std::endl;
+    // for (auto i = 0U; i < n_out; i++)
+    //     std::cout << "Error[" << i << "] = " << data[i] << std::endl;
 
 
     // Create the AD function
     ADFun<CGD> jacobian_error_func(ad_inp, data);
-    CodeHandler<double> handler;
     CppAD::vector<CGD> ind_vars(num_inp);
-    handler.makeVariables(ind_vars);
-
+    for (auto i=0U; i < num_inp; i++)
+        ind_vars[i] = CppAD::Value(ad_inp[i]);
     CppAD::vector<CGD> result = jacobian_error_func.Forward(0, ind_vars);
-    
     CppAD::vector<CGD> jac = jacobian_error_func.Jacobian(ind_vars);
-    CppAD::vector<CGD> jac_e_q(n_out * nq);
-    CGD zero_cgd(0.0);
-    CGD one_cgd(1.0);
 
-    for(auto i=0U; i < n_out; i++)
-    {
-        for(auto j=0U; j < nq; j++)
-        {
-            jac_e_q[i * nq + j] = jac[i * num_inp + j];
-        }
-    }
-
-    std::move(result.begin(), result.end(), std::back_inserter(jac_e_q));
-
-
-    LanguageCCustom<double> langC("double");
-    LangCDefaultVariableNameGenerator<double> nameGen;
-
-    std::ostringstream function_code;
-    handler.generateCode(function_code, langC, jac_e_q, nameGen);
-
-    return Traced{function_code.str(), handler.getTemporaryVariableCount(), jac_e_q.size()};
-}
-
-
-auto trace_full_tsr_project(
-    const RobotInfo &info
-    ) -> Traced
-{
-
-    const double DT = 1.0;
-    const double damp = 1e-5;
-    auto nq = info.model.nq;
-    auto nv = info.model.nv;
-    const size_t nt = 6; // task space is se3
-    // const size_t ntnt = 16; // for 4x4 matrix
-
-    ADModel ad_model = info.model.cast<ADCG>();
-    ADData ad_data(ad_model);
-
-    // Total inputs is:
-    // 2 * 4x4 matrices for constraint space
-    // 2 * 6 bounds for constraint space
-    // nq  for configuration space 
-    const size_t num_inp = 7 * 2 + nt * 2 + nq;
-
-    ADVectorXs ad_inp(num_inp); // 3 4x4 matrices
-    for (auto i = 0U; i < num_inp; ++i)
-        ad_inp[i] = ADCG(0.0);
-
-    Independent(ad_inp);
-
-    Eigen::Vector3<ADCG> rTep;
-    Eigen::Vector3<ADCG> wTrp;
-
-    ADVectorXs lb(nt);
-    ADVectorXs ub(nt);
-    ADVectorXs ad_q(nq);
-
-    // Copying inputs from ad_inp into individual matrices
-    for (auto i = 0U; i < nq; i++)
-        ad_q[i] = ad_inp[i]; // This is the first 7 vars for nq
-
-
-    Eigen::Quaternion<ADCG> rTeq(ad_inp[nq + 0 + 0], ad_inp[nq + 0 + 1], ad_inp[nq + 0 + 2], ad_inp[nq + 0 + 3]); // Next 7 for rTe
-    Eigen::Quaternion<ADCG> wTrq(ad_inp[nq + 7 + 0], ad_inp[nq + 7 + 1], ad_inp[nq + 7 + 2], ad_inp[nq + 7 + 3]); // 7 after that for wTr
-
-
-    for (auto i=0U; i < 3; i++)
-    {
-        rTep[i] = ad_inp[nq + 4 + i];
-        wTrp[i] = ad_inp[nq + 7 + 4 + i];
-    }
-
-
-    for (auto i = 0U; i < nt; i++)
-    {
-        lb[i] = ad_inp[nq +  2 * 7 + i];
-        ub[i] = ad_inp[nq + 2 * 7 + nt + i];
-    }
-
-    SE3Tpl<ADCG, 0> rTe (rTeq, rTep); // it is assumed that this err is expressed in the eef joint frame 
-    SE3Tpl<ADCG, 0> wTr (wTrq, wTrp);  
-    // input setup done
-
-
-    forwardKinematics(ad_model, ad_data, ad_q);
-    updateFramePlacements(ad_model, ad_data);
-
-    std::cout << ad_data.oMf[info.end_effector_index] << rTe << std::endl;
-
-    // compute error term
-    const auto wTobj = ad_data.oMf[info.end_effector_index] * rTe.inverse();
-
-    // const auto rTw = wTr.inverse(); //.matrix();
-    // auto rTobj = rTw * wTobj.matrix();
-
-    const auto rTobj = wTr.inverse() * wTobj;
-
-    ADVectorXs displacement(nt);
-    displacement.setZero();
-    displacement << rTobj.translation_impl(), log3(rTobj.rotation_impl());
-    ADCG zero(0.0);
-
-
-    std::size_t n_out = nt;
-    ADVectorXs data(n_out);
-    for (auto i = 0U; i < nt; i++){
-        data[i] = min(displacement[i] - lb[i], displacement[i] * 1e-6) + max(displacement[i] - ub[i], displacement[i] * 1e-6);
-    }
-
-
-    // Create the AD function
-    ADFun<CGD> jacobian_error_func(ad_inp, data);
-    CodeHandler<double> handler;
-    CppAD::vector<CGD> ind_vars(num_inp);
-    handler.makeVariables(ind_vars);
-
-    CppAD::vector<CGD> result = jacobian_error_func.Forward(0, ind_vars);
-    
-    CppAD::vector<CGD> jac = jacobian_error_func.Jacobian(ind_vars);
-    // CppAD::vector<CGD> jac_e_q(n_out * nq);
-    CGD zero_cgd(0.0);
-    CGD one_cgd(1.0);
+    // print result
+    std::cout << "Result: ";
+    for (auto i=0U; i < result.size(); i++)
+        std::cout << result[i] << " ";
+    std::cout << std::endl;
 
     using CGDVectorXs = Eigen::Matrix<CGD, Eigen::Dynamic, 1>;
     using CGDMatrixXs = Eigen::Matrix<CGD, Eigen::Dynamic, Eigen::Dynamic>;
-
-
-
     CGDMatrixXs ad_J(nt, nq);
 
     for(auto i=0U; i < n_out; i++)
         for(auto j=0U; j < nq; j++)
             ad_J(i, j) = jac[i * num_inp + j];
     
+    // std::cout < "Jacobian is " << ad_J << std::endl;
+    // for (auto i=0U; i < nt; i++){
+    //     for (auto j=0U; j < nq; j++)
+    //         std::cout << ad_J(i, j) << ",";
+    //     std::cout << std::endl;
+    // }
 
     CGDMatrixXs identity(nt, nt);
     identity.setIdentity();
     CGDVectorXs ad_e(nt);
 
     // set up ad_e
-    for (auto i=0U; i < nt; i++)
-        ad_e(i) = result[i];
+    for (auto i=0U; i < nt; i++){
+        if (i < 3)
+            ad_e(i) = result[i]; // for position, we want to reduce the err in 0.1s
+        else
+            ad_e(i) = result[i]; // for rotation, we want to reduce the err in 1 step
+    }
 
     // compute solution here directly. 
-    auto decomposed = cholesky_factor<CGDMatrixXs, CGD>(ad_J * ad_J.transpose() + identity * damp);
+    auto decomposed = cholesky_factor<CGDMatrixXs, CGD>(ad_J * ad_J.transpose() + identity * 1e-4);
     CGDVectorXs grad = ad_J.transpose() * cholesky_solve<CGDMatrixXs, CGDVectorXs, CGD>(decomposed, ad_e);
+
+    // CGDVectorXs grad = ad_J.transpose() * (ad_J * ad_J.transpose() + identity * 1e-4).llt().solve(ad_e);
+    // CGDVectorXs grad = ad_J.transpose() * ad_e;
 
     CppAD::vector<CGD> grad_vec(nq);
     for (auto i=0U; i < nq; i++)
         grad_vec[i] = grad(i);
-    
-    CppAD::vector<CGD> q_new(nq);
-    for (auto i=0U; i < nq; i++)
-    {
-        q_new[i] = ind_vars[i] - grad_vec[i] * DT;
-        // clip based on joint limits
-        q_new[i] = CppAD::CondExpLt(q_new[i], CGD(info.model.lowerPositionLimit[i]), CGD(info.model.lowerPositionLimit[i]), q_new[i]);
-        q_new[i] = CppAD::CondExpGt(q_new[i], CGD(info.model.upperPositionLimit[i]), CGD(info.model.upperPositionLimit[i]), q_new[i]);
-    }
 
-    std::move(result.begin(), result.end(), std::back_inserter(q_new));
+    std::move(result.begin(), result.end(), std::back_inserter(grad_vec));
+
+    return grad_vec;
 
 
-    LanguageCCustom<double> langC("double");
-    LangCDefaultVariableNameGenerator<double> nameGen;
-
-    std::ostringstream function_code;
-    handler.generateCode(function_code, langC, q_new, nameGen);
-
-    return Traced{function_code.str(), handler.getTemporaryVariableCount(), q_new.size()};
 }
-
-
-auto trace_solve_tsr_function(
-    const RobotInfo &info
-    ) -> Traced
-{
-
-    const double DT = 0.1;
-    const double damp = 1e-6;
-    auto nq = info.model.nq;
-    auto nv = info.model.nv;
-    const size_t nt = 6; // task space is se3
-
-
-    const size_t num_inp = nt + nt * nq;
-    ADVectorXs ad_inp(num_inp); // 3 4x4 matrices
-    for (auto i = 0U; i < num_inp; ++i)
-        ad_inp[i] = ADCG(0.0);
-
-    Independent(ad_inp);
-
-    ADVectorXs ad_e(nt);
-    ADMatrixXs ad_J(nt, nq);
-
-    // Copying inputs from ad_inp into individual matrices
-    for (auto i = 0U; i < nt; i++)
-        ad_e[i] = ad_inp[i + nt * nq]; // This is the first 7 vars for nq
-
-    // Copying inputs from ad_inp into individual matrices
-    for(auto i=0U; i < nt; i++)
-        for(auto j=0U; j < nq; j++)
-            ad_J(i, j) = ad_inp[i * nq + j];
-
-    ADVectorXs grad(nq);
-    ADMatrixXs identity(nq, nq);
-    identity.setIdentity();
-    // ADMatrixXs decomposed(nt, nt);
-    // auto decomposed = (ad_J * ad_J.transpose()).ldlt().matrixLDLT();
-    std::cout << "computing decomposed" << std::endl;
-    auto decomposed = cholesky_factor<ADMatrixXs, ADCG>(ad_J.transpose() * ad_J + identity * 1e-4);
-    std::cout << "computed decomposed" << std::endl;
-    auto mult = ad_J.transpose() * ad_e;
-    std::cout << "computed mult" << std::endl;
-    grad = cholesky_solve<ADMatrixXs, ADVectorXs, ADCG>(decomposed, mult);
-    std::cout << "computed grad" << std::endl;
-    std::size_t n_out = nq;
-    ADVectorXs data(n_out);
-
-    for (auto i = 0U; i < nq; i++)
-        data[i] = grad(i);
-
-
-    // grad = ad_J.transpose() * (ad_J * ad_J.transpose()).llt().solve(ad_e);
-
-    // std::size_t n_out = nt * nt;
-    // ADVectorXs data(n_out);
-
-    // for (auto i = 0U; i < nt; i++)
-    //     for (auto j = 0U; j < nt; j++)
-    //         data[i * nt + j] = decomposed(i, j);
-
-    // Create the AD function
-    ADFun<CGD> solve_func(ad_inp, data);
-    CodeHandler<double> handler;
-    CppAD::vector<CGD> ind_vars(num_inp);
-    handler.makeVariables(ind_vars);
-
-    CppAD::vector<CGD> result = solve_func.Forward(0, ind_vars);
-
-
-    LanguageCCustom<double> langC("double");
-    LangCDefaultVariableNameGenerator<double> nameGen;
-
-    std::ostringstream function_code;
-    handler.generateCode(function_code, langC, result, nameGen);
-
-    return Traced{function_code.str(), handler.getTemporaryVariableCount(), result.size()};
-}
-
-
-auto trace_solve_tsr_function_jac_t(
-    const RobotInfo &info
-    ) -> Traced
-{
-
-    const double DT = 0.1;
-    const double damp = 1e-6;
-    auto nq = info.model.nq;
-    auto nv = info.model.nv;
-    const size_t nt = 6; // task space is se3
-
-
-    const size_t num_inp = nt + nt * nq;
-    ADVectorXs ad_inp(num_inp); // 3 4x4 matrices
-    for (auto i = 0U; i < num_inp; ++i)
-        ad_inp[i] = ADCG(0.0);
-
-    Independent(ad_inp);
-
-    ADVectorXs ad_e(nt);
-    ADMatrixXs ad_J(nt, nq);
-
-    // Copying inputs from ad_inp into individual matrices
-    for (auto i = 0U; i < nt; i++)
-        ad_e[i] = ad_inp[i + nt * nq]; // This is the first 7 vars for nq
-
-    // Copying inputs from ad_inp into individual matrices
-    // ad_J = Eigen::Map<ADMatrixXs>(&ad_inp[0], nt, nq);
-    for(auto i=0U; i < nt; i++)
-        for(auto j=0U; j < nq; j++)
-            ad_J(i, j) = ad_inp[i * nq + j];
-
-    ADVectorXs grad(nq);
-    ADMatrixXs identity(nt, nt);
-    identity.setIdentity();
-    // ADMatrixXs decomposed(nt, nt);
-    // auto decomposed = (ad_J * ad_J.transpose()).ldlt().matrixLDLT();
-    // auto decomposed = cholesky_factor<ADMatrixXs, ADCG>(ad_J * ad_J.transpose() + identity * 1e-4);
-    grad = ad_J.transpose() * ad_e ;
-    std::size_t n_out = nq;
-    ADVectorXs data(n_out);
-
-    for (auto i = 0U; i < nq; i++)
-        data[i] = grad(i);
-
-
-    // grad = ad_J.transpose() * (ad_J * ad_J.transpose()).llt().solve(ad_e);
-
-    // std::size_t n_out = nt * nt;
-    // ADVectorXs data(n_out);
-
-    // for (auto i = 0U; i < nt; i++)
-    //     for (auto j = 0U; j < nt; j++)
-    //         data[i * nt + j] = decomposed(i, j);
-
-    // Create the AD function
-    ADFun<CGD> solve_func(ad_inp, data);
-    CodeHandler<double> handler;
-    CppAD::vector<CGD> ind_vars(num_inp);
-    handler.makeVariables(ind_vars);
-
-    CppAD::vector<CGD> result = solve_func.Forward(0, ind_vars);
-
-
-    LanguageCCustom<double> langC("double");
-    LangCDefaultVariableNameGenerator<double> nameGen;
-
-    std::ostringstream function_code;
-    handler.generateCode(function_code, langC, result, nameGen);
-
-    return Traced{function_code.str(), handler.getTemporaryVariableCount(), result.size()};
-}
-
-
-// if\s*\(\s*(v\[\d+\])\s*<\s*([0-9]*\.?[0-9]*)\s*\)\n\s*\{\s*\1\s*=\s*\2;\n\s*\}\n\s*else\s*\n\s*\{\s*\1\s*=\s*\1;\n\s*\} --> $1 = max($1, $2);
-// if\s*\(\s*([0-9]*\.?[0-9]*)\s*<\s*(v\[\d+\])\s*\)\n\s*\{\s*\2\s*=\s*\1;\n\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*\2;\n\s*\} --> $2 = min($2, $1);
-
-// for minmax 
-// if\s*\(\s*(v\[\d+\])\s*<\s*([0-9]*\.?[0-9]*)\s*\)\n\s*\{\s*\1\s*=\s*\2;\n\s*\}\n\s*else\s*\n\s*\{\s*\1\s*=\s*([0-9]*\.?[0-9]*);\n\s*\} --> $1 = max($2, min($1, $3));
-// if\s*\(\s*([0-9]*\.?[0-9]*)\s*<\s*(v\[\d+\])\s*\)\n\s*\{\s*\2\s*=\s*\1;\n\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*([0-9]*\.?[0-9]*);\n\s*\} --> $2 = min(max($2, $3), $1);
-
-
-// for generic
-// if\s*\((.*?)\)\n\s*\{\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*(.*?);\s*\} --> $2 = ($1) ? $3 : $4;
-// if\s*\(\s*(.*?)\s*<\s*(.*?)\s*\)\s*\{\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*(.*?);\s*\} --> $3 = ($1 < $2) ? $4 : $5;
-// if\s*\(\s*(.*?)\s*<\s*(.*?)\s*\)\s*\{\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\n\s*else\s*\n\s*\{\s*(.*?)\s*=\s*(.*?);\s*\}
-// if\s*\(\s*(.*?)\s*<\s*(.*?)\s*\)\s*\{\s*\n\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\s*else\s*\{\s*(.*?)\s*=\s*(.*?);\s*\}
-// if\s*\(\s*(.*?)\s*>=\s*(.*?)\s*\)\s*\{\s*\n\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\s*else\s*\{\s*\3\s*=\s*(.*?);\s*\} --> $3 = blend($4, $5, $1 - $2)
-
-
-// if\s*\(\s*(.*?)\s*>=\s*(.*?)\s*\)\s*\{\s*\n\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\s*else\s*\{\s*\3\s*=\s*(.*?);\s*\} --> $3 = blend($4, $5, $1 - $2);
-// if\s*\(\s*(.*?)\s*>\s*(.*?)\s*\)\s*\{\s*\n\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\s*else\s*\{\s*\3\s*=\s*(.*?);\s*\} --> $3 = blend($5, $4, $2 - $1);
-// if\s*\(\s*(.*?)\s*<=\s*(.*?)\s*\)\s*\{\s*\n\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\s*else\s*\{\s*\3\s*=\s*(.*?);\s*\} --> $3 = blend($4, $5, $2 - $1);
-// if\s*\(\s*(.*?)\s*<\s*(.*?)\s*\)\s*\{\s*\n\s*(\w+(?:\[\d+\])?)\s*=\s*(.*?);\s*\}\s*else\s*\{\s*\3\s*=\s*(.*?);\s*\} --> $3 = blend($5, $4, $1 - $2);
-
 
 int main(int argc, char **argv)
 {
@@ -1050,83 +662,103 @@ int main(int argc, char **argv)
 
     RobotInfo robot(parent_path / data["urdf"], srdf_path, end_effector_name);
 
-    data.update(robot.json());
+    // data.update(robot.json());
+    // return 0;
 
-    auto traced_eefk_code = trace_sphere_cc_fk(robot, false, false, true);
-    data["eefk_code"] = traced_eefk_code.code;
-    data["eefk_code_vars"] = traced_eefk_code.temp_variables;
-    data["eefk_code_output"] = traced_eefk_code.outputs;
+    std::array<float, 6> lower_bound = {
+        -0.01, -0.01, -0.03, -0.14, -0.14, -0.14
+    };
+    std::array<float, 6> upper_bound = {
+        0.03, 0.01, 0.03, 0.14, 0.14, 0.14
+    };
 
-    auto traced_spherefk_code = trace_sphere_cc_fk(robot, true, false, false);
-    data["spherefk_code"] = traced_spherefk_code.code;
-    data["spherefk_code_vars"] = traced_spherefk_code.temp_variables;
-    data["spherefk_code_output"] = traced_spherefk_code.outputs;
+    // std::array<float, 7> target_pose = {
+    //     0, 1, 0, 0, 0.543325, 0.570738, 0.121557
+    // };
+    // std::array<float, 7> in_hand_pose = {
+    //     1, 0, 0, 0, 0, 0, 0
+    // };
+    std::array<float, 7> q_init = {
+        0.56,1.20,0.0,0.0,0.0,1.57,1.64
+    };
 
-    auto traced_ccfk_code = trace_sphere_cc_fk(robot, true, true, false);
-    data["ccfk_code"] = traced_ccfk_code.code;
-    data["ccfk_code_vars"] = traced_ccfk_code.temp_variables;
-    data["ccfk_code_output"] = traced_ccfk_code.outputs;
 
-    auto traced_ccfkee_code = trace_sphere_cc_fk(robot, true, true, true);
-    data["ccfkee_code"] = traced_ccfkee_code.code;
-    data["ccfkee_code_vars"] = traced_ccfkee_code.temp_variables;
-    data["ccfkee_code_output"] = traced_ccfkee_code.outputs;
+    Eigen::Matrix<float, 4, 4> T;
+    // T <<   1,0,0, 0.543325, 0,-0.009, -0.999, 0.570738, 0, 0.999, -0.009, 0.121557, 0, 0, 0, 1;
+    T <<   0.999,  0.   ,  0.037,  0.444,  0.037, -0.025, -0.999,  0.4, 0.001,  1.   , -0.025,  0.159,  0.   ,  0.   ,  0.   ,  1.  ;
 
-    auto traced_tsr_error_function_code  = trace_tsr_error_function(robot);
-    data["tsr_error_function_code"] = traced_tsr_error_function_code.code;
-    data["tsr_error_function_code_vars"] = traced_tsr_error_function_code.temp_variables;
-    data["tsr_error_function_code_output"] = traced_tsr_error_function_code.outputs;
+    const Eigen::Transform<float, 3, Eigen::Isometry> target_pose(T);
+    std::cout << "Target pose is : " << target_pose.translation().transpose() << std::endl;
+    const auto in_hand_pose = Eigen::Transform<float, 3, Eigen::Isometry>::Identity();
 
-    auto traced_solve_tsr_function_code  = trace_solve_tsr_function(robot);
-    data["solve_tsr_function_code"] = traced_solve_tsr_function_code.code;
-    data["solve_tsr_function_code_vars"] = traced_solve_tsr_function_code.temp_variables;
-    data["solve_tsr_function_code_output"] = traced_solve_tsr_function_code.outputs;
+    Eigen::Quaternion<float> q1(in_hand_pose.linear());
+    std::array<float, 7> in_hand_pose_7 = {q1.w(), q1.x(), q1.y(), q1.z(), in_hand_pose.translation().x(), in_hand_pose.translation().y(), in_hand_pose.translation().z()};
 
-    auto traced_trace_full_tsr_project_code  = trace_full_tsr_project(robot);
-    data["trace_full_tsr_project_code"] = traced_trace_full_tsr_project_code.code;
-    data["trace_full_tsr_project_code_vars"] = traced_trace_full_tsr_project_code.temp_variables;
-    data["trace_full_tsr_project_code_output"] = traced_trace_full_tsr_project_code.outputs;
+    Eigen::Quaternion<float> q2(target_pose.linear());
+    std::array<float, 7> target_pose_7 = {q2.w(), q2.x(), q2.y(), q2.z(), target_pose.translation().x(), target_pose.translation().y(), target_pose.translation().z()};
 
-    // auto traced_tsr_error_function_scalar_grad_code  = trace_tsr_error_function_scalar_grad(robot);
-    // data["tsr_error_function_scalar_grad_code"] = traced_tsr_error_function_scalar_grad_code.code;
-    // data["tsr_error_function_scalar_grad_code_vars"] = traced_tsr_error_function_scalar_grad_code.temp_variables;
-    // data["tsr_error_function_scalar_grad_code_output"] = traced_tsr_error_function_scalar_grad_code.outputs;
+
+
+    // compose a new input of ADVectorXs ad_inp of q_init, target_pose, in_hand_pose, lower_bound, upper_bound
+    ADVectorXs ad_inp(7 * 2 + 6 * 2 + robot.model.nq); // 3 4x4 matrices + 3 6D vectors + nq
+    for (auto i = 0U; i < 7; ++i)
+        ad_inp[i] = ADCG(q_init[i]);
+    for (auto i = 0U; i < 7; ++i)
+        ad_inp[7 + i] = ADCG(in_hand_pose_7[i]);
+    for (auto i = 0U; i < 7; ++i)
+        ad_inp[14 + i] = ADCG(target_pose_7[i]);
+    for (auto i = 0U; i < 6; ++i)
+        ad_inp[21 + i] = ADCG(lower_bound[i]);
+    for (auto i = 0U; i < 6; ++i)
+        ad_inp[27 + i] = ADCG(upper_bound[i]);
+
+
+    for (auto i=0U; i < 10; i++){
+        std::cout << "Iteration " << i << " : ";
+        auto val = trace_full_tsr_project(robot, ad_inp);
+        for (auto j=0U; j < robot.model.nq; j++){
+            ad_inp[j] = ad_inp[j] - ADCG(1.0) * ADCG(val[j]);
+            // clip by bounds
+            if (CppAD::Value(ad_inp[j]) < robot.model.lowerPositionLimit[j])
+                ad_inp[j] = ADCG(robot.model.lowerPositionLimit[j]);
+            if (CppAD::Value(ad_inp[j]) > robot.model.upperPositionLimit[j])
+                ad_inp[j] = ADCG(robot.model.upperPositionLimit[j]);
+        }
+    }
+    std::cout << "Final q is : ";
+    for (auto j=0U; j < robot.model.nq; j++)
+        std::cout << CppAD::Value(ad_inp[j]) << " ";
+    std::cout << std::endl;
+
+
+    // for (auto i=0U; i < val.size(); i++)
+    //     std::cout << val[i] << " ";
+    // std::cout << std::endl;
+
+    // int num_inp = 7 * 2 + 6 * 2 + robot.model.nq; // 3 4x4 matrices + 3 6D vectors + nq
+    // ADVectorXs ad_inp(num_inp); // 3 4x4 matrices
+    // for (auto i = 0U; i < num_inp; ++i)
+    //     ad_inp[i] = ADCG(0.0);
+
+    // auto new_q = ad_inp - val;
+
+    // for (auto i=0U; i < robot.model.nq; i++) {
+    //     ad_inp[i] = ad_inp[i] + val[i];
+    //     std::cout << ad_inp[i] << " ";
+    // }
+    // std::cout << std::endl;
+
     
+    // std::cout << "New q is : ";
+    // for (auto i=0U; i < robot.model.nq; i++)
+    //     std::cout << CppAD::Value(new_q[i]) << " ";
+    // std::cout << std::endl;
 
-    inja::Environment env;
-
-    for (const auto &subt : data["subtemplates"])
-    {
-        inja::Template temp = env.parse_template(parent_path / subt["template"]);
-        env.include_template(subt["name"], temp);
-    }
-
-    std::string output_template;
-    if (result.count("output_template"))
-    {
-        output_template = result["output_template"].as<std::string>();
-    }
-    else
-    {
-        output_template = data["output"];
-    }
-
-    inja::Template temp = env.parse_template(parent_path / data["template"]);
-    env.write(temp, data, output_template);
-
-    std::string output_filename;
-    if (result.count("output_filename"))
-    {
-        output_filename = result["output_filename"].as<std::string>();
-    }
-    else
-    {
-        output_filename = "output.json";
-    }
-
-    std::ofstream output_file(output_filename);
-    output_file << data.dump();
-    output_file.close();
+    // val = trace_full_tsr_project(robot, ad_inp2);
+    // for (auto i=0U; i < val.size(); i++)
+    //     std::cout << val[i] << " ";
+    // std::cout << std::endl;
 
     return 0;
+
 }

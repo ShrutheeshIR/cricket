@@ -68,6 +68,8 @@ list(APPEND cppadcg_INCLUDE_DIRS
 
 # Create the executable
 add_executable(fkcc_gen src/fkcc_gen.cc)
+add_executable(test_cholesky src/test_cholesky_decomp.cc)
+add_executable(test_robot src/test_robot.cc)
 
 # Set include directories
 target_include_directories(fkcc_gen PRIVATE
@@ -92,9 +94,41 @@ target_compile_definitions(fkcc_gen PRIVATE
     ${pinocchio_CFLAGS_OTHER}
 )
 
+target_link_libraries(test_cholesky
+    Eigen3::Eigen
+    cxxopts::cxxopts
+)
+
+target_include_directories(test_robot PRIVATE
+    ${cppad_INCLUDE_DIRS}
+    # ${cppadcg_INCLUDE_DIRS}
+)
+
+# Link libraries
+target_link_libraries(test_robot
+    pinocchio::pinocchio
+    Eigen3::Eigen
+    ${cppad_LIBRARIES}
+    pantor::inja
+    nlohmann_json::nlohmann_json
+    CGAL::CGAL
+    fmt::fmt
+    cxxopts::cxxopts
+)
+
+# Add compiler definitions
+target_compile_definitions(test_robot PRIVATE
+    ${pinocchio_CFLAGS_OTHER}
+)
+
+
 # Install
 include(GNUInstallDirs)
-install(TARGETS fkcc_gen
+install(TARGETS fkcc_gen test_cholesky test_robot
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   COMPONENT Runtime
 )
+# install(TARGETS test_robot test_cholesky
+#   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+#   COMPONENT Runtime
+# )
