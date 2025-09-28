@@ -1,0 +1,7 @@
+{
+    "name": "Panda",
+    "dof": 7,
+    "template": "templates/topple_template.hh",
+    "output": "topple_nn_forward.hh",
+    "weights": "matrices.csv"
+}

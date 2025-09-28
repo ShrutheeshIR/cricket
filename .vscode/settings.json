@@ -80,6 +80,7 @@
         "variant": "cpp",
         "__nullptr": "cpp",
         "ios": "cpp",
-        "__config": "cpp"
+        "__config": "cpp",
+        "csignal": "cpp"
     }
 }
