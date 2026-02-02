@@ -99,8 +99,8 @@ auto trace_tsr_error_function(const RobotInfo &info) -> Traced
 
         ADVectorXs displacement(nt);
         displacement.setZero();
-        // displacement << rTobj.translation_impl(), log3(rTobj.rotation_impl());
-        displacement << rTobj.translation_impl(), so3_log_smooth<ADMatrixXs, ADCG>(rTobj.rotation_impl());
+        displacement << rTobj.translation_impl(), log3(rTobj.rotation_impl());
+        // displacement << rTobj.translation_impl(), so3_log_smooth<ADMatrixXs, ADCG>(rTobj.rotation_impl());
 
         // TODO (siyer) -- we ignore the bounds here, since
         // it would set some gradients to be zero by mistake while tracing.

@@ -134,6 +134,271 @@ auto trace_sphere_cc_fk(
     return Traced{function_code.str(), handler.getTemporaryVariableCount(), n_out};
 }
 
+auto compute_sphere_fk_positions_jac(
+    const RobotInfo &info
+) -> Traced
+{
+    auto nq = info.model.nq;
+    ADModel ad_model = info.model.cast<ADCG>();
+    ADData ad_data(ad_model);
+
+    ADVectorXs ad_q(nq);
+    for (auto i = 0U; i < nq; ++i)
+    {
+        ad_q[i] = ADCG(0.0);
+    }
+
+    Independent(ad_q);
+
+    forwardKinematics(ad_model, ad_data, ad_q);
+    updateFramePlacements(ad_model, ad_data);
+
+    std::size_t n_spheres_data = info.spheres.size() * 4;
+    std::size_t n_out = n_spheres_data;
+
+    ADVectorXs data(n_out);
+
+    for (auto i = 0U; i < info.spheres.size(); ++i)
+    {
+        const auto &sphere = info.spheres[i];
+        trace_sphere(sphere, ad_data, data, sphere.geom_index * 4);
+    }
+
+    // Create the AD function
+    ADFun<CGD> collision_sphere_func(ad_q, data);
+
+    CodeHandler<double> handler;
+    CppAD::vector<CGD> ind_vars(nq);
+    handler.makeVariables(ind_vars);
+
+    CppAD::vector<CGD> result = collision_sphere_func.Forward(0, ind_vars);
+    CppAD::vector<CGD> jac = collision_sphere_func.Jacobian(ind_vars);
+    CppAD::vector<CGD> jac_e_q(3 * info.spheres.size() * nq);  // this is jacobian with respect to joint configs only.
+
+    for (auto sph = 0U; sph < info.spheres.size(); sph++)
+    {
+        for (auto dim = 0U; dim < 3; dim++)
+        {
+            for (auto q = 0U; q < nq; q++)
+            {
+                std::size_t in_idx  = sph*(4*nq) + dim*nq + q;
+                std::size_t out_idx = sph*(3*nq) + dim*nq + q;
+                jac_e_q[out_idx] = jac[in_idx];
+            }
+        }
+    }
+    std::move(jac_e_q.begin(), jac_e_q.end(), std::back_inserter(result));
+    LanguageCCustom<double> langC("double");
+    LangCDefaultVariableNameGenerator<double> nameGen;
+
+    std::ostringstream function_code;
+    handler.generateCode(function_code, langC, result, nameGen);
+
+    return Traced{function_code.str(), handler.getTemporaryVariableCount(), result.size()};
+
+
+}
+
+
+auto compute_sphere_sphere_collision() -> Traced{
+
+    const size_t num_inp = 4 + 4; // sphere1 + sphere2
+
+    ADVectorXs ad_inp(num_inp);  //
+    for (auto i = 0U; i < num_inp; ++i)
+    {
+        ad_inp[i] = ADCG(0.0);
+    }
+    Independent(ad_inp);
+
+    auto x1 = ad_inp[0];
+    auto y1 = ad_inp[1];
+    auto z1 = ad_inp[2];
+    auto r1 = ad_inp[3];
+    auto x2 = ad_inp[4];
+    auto y2 = ad_inp[5];
+    auto z2 = ad_inp[6];
+    auto r2 = ad_inp[7];
+
+    auto dx = x2 - x1;
+    auto dy = y2 - y1;
+    auto dz = z2 - z1;
+    auto d = dx * dx + dy * dy + dz * dz;
+    auto r = (r1 + r2) * (r1 + r2);
+    auto penetration = r - d;
+    auto penetration_soft_hinge = 0.5 * (penetration + sqrt(penetration * penetration + 1e-6));
+
+    // apply hinge loss to collision such that
+    // if collision > 0, collision = 0
+
+    std::size_t n_out = 1;
+    ADVectorXs data(n_out);
+
+    data[0] = penetration_soft_hinge;
+    std::cout << "Soft hinge loss is : " << data[0] << std::endl;
+
+    ADFun<CGD> collision_sphere_func(ad_inp, data);
+    CppAD::vector<CGD> ind_vars(num_inp);
+
+
+    CodeHandler<double> handler;
+    handler.makeVariables(ind_vars);
+
+    CppAD::vector<CGD> result = collision_sphere_func.Forward(0, ind_vars);
+    CppAD::vector<CGD> jac = collision_sphere_func.Jacobian(ind_vars);
+
+    CppAD::vector<CGD> jac_e_q(n_out * 3);  // this is jacobian with respect to joint configs only.
+
+    std::cout << "Jac sizes are : " << jac.size() << ", " << jac_e_q.size() << std::endl;
+
+    for (auto i = 0U; i < n_out; i++)
+    {
+        for (auto j = 0U; j < 3; j++)
+        {
+            jac_e_q[i * 3 + j] = jac[i * num_inp + j];
+        }
+    }
+
+    std::move(jac_e_q.begin(), jac_e_q.end(), std::back_inserter(result));
+
+    LanguageCCustom<double> langC("double");
+    LangCDefaultVariableNameGenerator<double> nameGen;
+
+    std::ostringstream function_code;
+    handler.generateCode(function_code, langC, result, nameGen);
+
+    return Traced{function_code.str(), handler.getTemporaryVariableCount(), result.size()};
+
+}
+
+
+auto compute_sphere_cuboid_collision() -> Traced{
+
+    const size_t num_inp = 4 + 15; // sphere1 + sphere2
+
+    ADVectorXs ad_inp(num_inp);  //
+    for (auto i = 0U; i < num_inp; ++i)
+    {
+        ad_inp[i] = ADCG(0.0);
+    }
+    Independent(ad_inp);
+
+    ADVectorXs x(4);  //
+    ADVectorXs cub(15);  //
+
+    // copy input values to x and cub vectors
+    for (auto i = 0U; i < 4; ++i)
+    {
+        x[i] = ad_inp[i];
+    }
+    for (auto i = 0U; i < 15; ++i)
+    {
+        cub[i] = ad_inp[4 + i];
+    }
+    const auto eps = static_cast<ADCG>(1e-8);
+    const auto half = static_cast<ADCG>(0.5);
+
+    auto s_abs = [eps](auto v) {
+        return sqrt(v * v + eps);
+    };
+
+    auto s_max0 = [eps, half](auto v) {
+        return half * (v + sqrt(v * v + eps));
+    };
+
+    auto s_min = [eps, half](auto a, auto b) {
+        return half * (a + b - sqrt((a - b) * (a - b) + eps));
+    };
+
+    // 1. Relative vector from cuboid center to sphere center
+    const auto dx = x[0] - cub[0];
+    const auto dy = x[1] - cub[1];
+    const auto dz = x[2] - cub[2];
+
+    // 2. Project onto cuboid local axes
+    const auto lx = dx * cub[3] + dy * cub[4] + dz * cub[5];
+    const auto ly = dx * cub[6] + dy * cub[7] + dz * cub[8];
+    const auto lz = dx * cub[9] + dy * cub[10] + dz * cub[11];
+
+    // 3. Smooth absolute value
+    const auto alx = s_abs(lx);
+    const auto aly = s_abs(ly);
+    const auto alz = s_abs(lz);
+
+    // 4. Signed distances to each slab
+    const auto qx = alx - cub[12];
+    const auto qy = aly - cub[13];
+    const auto qz = alz - cub[14];
+
+    // 5. Outside distance (smooth ReLU)
+    const auto ox = s_max0(qx);
+    const auto oy = s_max0(qy);
+    const auto oz = s_max0(qz);
+    const auto outside_dist = sqrt(ox * ox + oy * oy + oz * oz + eps);
+
+    // 6. Inside distance (distance to nearest face, NEGATIVE)
+    const auto ix = cub[12] - alx;
+    const auto iy = cub[13] - aly;
+    const auto iz = cub[14] - alz;
+
+    // smooth min(ix, iy, iz)
+    const auto inside_dist =
+        s_min(ix, s_min(iy, iz));
+
+    // 7. Smooth blend inside vs outside
+    // inside_dist < 0 when outside → smoothly ignored
+    const auto sdf = outside_dist - s_max0(-inside_dist);
+
+    // 8. Sphere penetration
+    const auto penetration = x[3] - sdf;
+
+    // 9. Final soft constraint
+    const auto constraint = s_max0(penetration);
+    // apply hinge loss to collision such that
+    // if collision > 0, collision = 0
+
+    std::size_t n_out = 1;
+    ADVectorXs data(n_out);
+
+    data[0] = constraint;
+    std::cout << "Soft hinge loss is : " << data[0] << std::endl;
+
+    ADFun<CGD> collision_sphere_func(ad_inp, data);
+    CppAD::vector<CGD> ind_vars(num_inp);
+
+
+    CodeHandler<double> handler;
+    handler.makeVariables(ind_vars);
+
+    CppAD::vector<CGD> result = collision_sphere_func.Forward(0, ind_vars);
+    CppAD::vector<CGD> jac = collision_sphere_func.Jacobian(ind_vars);
+
+    CppAD::vector<CGD> jac_e_q(n_out * 3);  // this is jacobian with respect to joint configs only.
+
+    std::cout << "Jac sizes are : " << jac.size() << ", " << jac_e_q.size() << std::endl;
+
+    for (auto i = 0U; i < n_out; i++)
+    {
+        for (auto j = 0U; j < 3; j++)
+        {
+            jac_e_q[i * 3 + j] = jac[i * num_inp + j];
+        }
+    }
+
+    std::move(jac_e_q.begin(), jac_e_q.end(), std::back_inserter(result));
+
+    LanguageCCustom<double> langC("double");
+    LangCDefaultVariableNameGenerator<double> nameGen;
+
+    std::ostringstream function_code;
+    handler.generateCode(function_code, langC, result, nameGen);
+
+    return Traced{function_code.str(), handler.getTemporaryVariableCount(), result.size()};
+
+}
+
+
+
 int main(int argc, char **argv)
 {
     cxxopts::Options options(argv[0], "Tracing compiler for forward kinematics and collision checking");
@@ -225,10 +490,18 @@ int main(int argc, char **argv)
     add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::GradDesc, 2), "solve_com_function_gradient_descent_code", data);
 
 
-    add_to_trace(trace_bounding_spheres_self_collision_error(robot), "bounding_spheres_self_collision_error_code", data);
-    add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::InnerLM, robot.num_valid_bounding_spheres), "solve_self_collision_error_lm_inner_code", data);
-    add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::OuterLM, robot.num_valid_bounding_spheres), "solve_self_collision_error_lm_outer_code", data);
-    add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::GradDesc, robot.num_valid_bounding_spheres), "solve_self_collision_error_gradient_descent_code", data);
+    // add_to_trace(trace_bounding_spheres_self_collision_error(robot), "bounding_spheres_self_collision_error_code", data);
+    // add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::InnerLM, robot.num_valid_bounding_spheres), "solve_self_collision_error_lm_inner_code", data);
+    // add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::OuterLM, robot.num_valid_bounding_spheres), "solve_self_collision_error_lm_outer_code", data);
+    // add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::GradDesc, robot.num_valid_bounding_spheres), "solve_self_collision_error_gradient_descent_code", data);
+
+    add_to_trace(compute_sphere_sphere_collision(), "sphere_sphere_collision_code", data);
+    add_to_trace(compute_sphere_cuboid_collision(), "sphere_cuboid_collision_code", data);
+
+    add_to_trace(compute_sphere_fk_positions_jac(robot), "sphere_fk_positions_jac_code", data);
+    add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::InnerLM, robot.spheres.size()), "solve_sphere_env_function_lm_inner_code", data);
+    add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::OuterLM, robot.spheres.size()), "solve_sphere_env_function_lm_outer_code", data);
+    add_to_trace(trace_solve_generic_constraint_function(robot, ProjMethod::GradDesc, robot.spheres.size()), "solve_sphere_env_function_gradient_descent_code", data);
 
 
 

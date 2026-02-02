@@ -390,50 +390,208 @@ struct {{name}}
     }
 
     template <std::size_t rake, typename InputVector, typename OutputVector>
-    static inline auto bounding_spheres_self_collision_error(const InputVector &x, OutputVector &out)
+    static inline auto sphere_sphere_collision_error(const InputVector &x, OutputVector &out)
     {
-        std::array<FloatVector<rake, 1>, {{bounding_spheres_self_collision_error_code_vars}}> v;
-        std::array<FloatVector<rake, 1>, {{bounding_spheres_self_collision_error_code_output}}> y;
+        std::array<FloatVector<rake, 1>, {{sphere_sphere_collision_code_vars}}> v;
+        std::array<FloatVector<rake, 1>, {{sphere_sphere_collision_code_output}}> y;
 
-        {{bounding_spheres_self_collision_error_code}}
+        {{sphere_sphere_collision_code}}
 
-        for(size_t i = 0; i < {{bounding_spheres_self_collision_error_code_output}}; i++)
+        for(size_t i = 0; i < {{sphere_sphere_collision_code_output}}; i++)
             out[i] = y[i];
     }
 
     template <std::size_t rake, typename InputVector, typename OutputVector>
-    static inline auto solve_self_collision_error_lm_inner(const InputVector &x, OutputVector &out)
+    static inline auto sphere_cuboid_collision_error(const InputVector &x, OutputVector &out)
     {
-        std::array<FloatVector<rake, 1>, {{solve_self_collision_error_lm_inner_code_vars}}> v;
-        std::array<FloatVector<rake, 1>, {{solve_self_collision_error_lm_inner_code_output}}> y;
+        std::array<FloatVector<rake, 1>, {{sphere_cuboid_collision_code_vars}}> v;
+        std::array<FloatVector<rake, 1>, {{sphere_cuboid_collision_code_output}}> y;
 
-        {{solve_self_collision_error_lm_inner_code}}
+        {{sphere_cuboid_collision_code}}
 
-        for(size_t i = 0; i < {{solve_self_collision_error_lm_inner_code_output}}; i++)
+        for(size_t i = 0; i < {{sphere_cuboid_collision_code_output}}; i++)
+            out[i] = y[i];
+    }
+
+    template <std::size_t rake, typename InputSphereVector, typename InputSphVector>
+    inline static auto sphere_sphere_collision_error(const InputSphereVector &x, InputSphVector &sph, FloatVector<rake, 4> &y)
+    {
+        std::array<FloatVector<rake, 1>, 5> v;
+
+        v[0] = sph[0] - x[0];
+        v[1] = sph[1] - x[1];
+        v[2] = sph[2] - x[2];
+        v[2] = (x[3] + sph[3]) * (x[3] + sph[3]) - (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        y[0] = 0.5 * (v[2] + sqrt(1e-06 + v[2] * v[2]));
+        v[2] = sph[0] - x[0];
+        v[1] = sph[1] - x[1];
+        v[0] = sph[2] - x[2];
+        v[3] = (x[3] + sph[3]) * (x[3] + sph[3]) - (v[2] * v[2] + v[1] * v[1] + v[0] * v[0]);
+        v[4] = (0.5 * 1. / sqrt(1e-06 + v[3] * v[3])) / 2.;
+        v[4] = 0. - (0.5 + v[4] * v[3] + v[4] * v[3]);
+        y[1] = 0. - (v[4] * v[2] + v[4] * v[2]);
+        y[2] = 0. - (v[4] * v[1] + v[4] * v[1]);
+        y[3] = 0. - (v[4] * v[0] + v[4] * v[0]);
+
+    }
+
+    template <std::size_t rake, typename InputSphereVector, typename InputCubVector>
+    inline static auto sphere_cuboid_collision_error(const InputSphereVector &x, const InputCubVector &cub, FloatVector<rake, 4> &y)
+    {
+        std::array<FloatVector<rake, 1>, 18> v;
+
+        v[0] = x[0] - cub[0];
+        v[1] = x[1] - cub[1];
+        v[2] = x[2] - cub[2];
+        v[3] = v[0] * cub[3] + v[1] * cub[4] + v[2] * cub[5];
+        v[3] = sqrt(1e-08 + v[3] * v[3]) - cub[12];
+        v[3] = 0.5 * (v[3] + sqrt(1e-08 + v[3] * v[3]));
+        v[4] = v[0] * cub[6] + v[1] * cub[7] + v[2] * cub[8];
+        v[4] = sqrt(1e-08 + v[4] * v[4]) - cub[13];
+        v[4] = 0.5 * (v[4] + sqrt(1e-08 + v[4] * v[4]));
+        v[2] = v[0] * cub[9] + v[1] * cub[10] + v[2] * cub[11];
+        v[2] = sqrt(1e-08 + v[2] * v[2]) - cub[14];
+        v[2] = 0.5 * (v[2] + sqrt(1e-08 + v[2] * v[2]));
+        v[2] = x[3] - sqrt(1e-08 + v[3] * v[3] + v[4] * v[4] + v[2] * v[2]);
+        y[0] = 0.5 * (v[2] + sqrt(1e-08 + v[2] * v[2]));
+        v[2] = x[0] - cub[0];
+        v[4] = x[1] - cub[1];
+        v[3] = x[2] - cub[2];
+        v[1] = v[2] * cub[3] + v[4] * cub[4] + v[3] * cub[5];
+        v[0] = sqrt(1e-08 + v[1] * v[1]);
+        v[5] = v[0] - cub[12];
+        v[6] = sqrt(1e-08 + v[5] * v[5]);
+        v[7] = 0.5 * (v[5] + v[6]);
+        v[8] = v[2] * cub[6] + v[4] * cub[7] + v[3] * cub[8];
+        v[9] = sqrt(1e-08 + v[8] * v[8]);
+        v[10] = v[9] - cub[13];
+        v[11] = sqrt(1e-08 + v[10] * v[10]);
+        v[12] = 0.5 * (v[10] + v[11]);
+        v[3] = v[2] * cub[9] + v[4] * cub[10] + v[3] * cub[11];
+        v[4] = sqrt(1e-08 + v[3] * v[3]);
+        v[2] = v[4] - cub[14];
+        v[13] = sqrt(1e-08 + v[2] * v[2]);
+        v[14] = 0.5 * (v[2] + v[13]);
+        v[15] = sqrt(1e-08 + v[7] * v[7] + v[12] * v[12] + v[14] * v[14]);
+        v[16] = x[3] - v[15];
+        v[17] = (0.5 * 1. / sqrt(1e-08 + v[16] * v[16])) / 2.;
+        v[17] = ((0. - (0.5 + v[17] * v[16] + v[17] * v[16])) * 1. / v[15]) / 2.;
+        v[14] = (v[17] * v[14] + v[17] * v[14]) * 0.5;
+        v[13] = (v[14] * 1. / v[13]) / 2.;
+        v[13] = ((v[14] + v[13] * v[2] + v[13] * v[2]) * 1. / v[4]) / 2.;
+        v[13] = v[13] * v[3] + v[13] * v[3];
+        v[12] = (v[17] * v[12] + v[17] * v[12]) * 0.5;
+        v[11] = (v[12] * 1. / v[11]) / 2.;
+        v[11] = ((v[12] + v[11] * v[10] + v[11] * v[10]) * 1. / v[9]) / 2.;
+        v[11] = v[11] * v[8] + v[11] * v[8];
+        v[17] = (v[17] * v[7] + v[17] * v[7]) * 0.5;
+        v[6] = (v[17] * 1. / v[6]) / 2.;
+        v[6] = ((v[17] + v[6] * v[5] + v[6] * v[5]) * 1. / v[0]) / 2.;
+        v[6] = v[6] * v[1] + v[6] * v[1];
+        y[1] = v[13] * cub[9] + v[11] * cub[6] + v[6] * cub[3];
+        y[2] = v[13] * cub[10] + v[11] * cub[7] + v[6] * cub[4];
+        y[3] = v[13] * cub[11] + v[11] * cub[8] + v[6] * cub[5];
+    }
+
+    template <std::size_t rake, typename InputVector>
+    static inline auto spheres_fk_jac(const InputVector &x, std::array<FloatVector<rake, 1>, {{sphere_fk_positions_jac_code_output}}> &y)
+    {
+        std::array<FloatVector<rake, 1>, {{sphere_fk_positions_jac_code_vars}}> v;
+
+        {{sphere_fk_positions_jac_code}}
+
+    }
+
+
+    template <std::size_t rake, typename OutputVector>
+    static inline auto robot_spheres_collision_fn(const vamp::collision::Environment<FloatVector<rake>> &environment, const ConfigurationBlock<rake> &x, OutputVector &out)
+    {
+        std::array<FloatVector<rake, 1>, {{sphere_fk_positions_jac_code_vars}}> v;
+        std::array<FloatVector<rake, 1>, {{sphere_fk_positions_jac_code_output}}> y;
+
+        {{sphere_fk_positions_jac_code}}
+
+        // now write my for loop and compute
+
+        for(size_t sphere_idx = 0U; sphere_idx < n_spheres; sphere_idx++)
+        {
+            auto collision_penetration_distance = FloatVector<rake>::fill(0.0f);
+            auto collision_penetration_jac = FloatVector<rake, 3>::fill(0.0f);
+
+            for (const auto &es : environment.spheres)
+            {
+
+                // compute collision penetration distance and jacobian
+
+                auto local_out = FloatVector<rake, 4>::fill(0.0f);
+                sphere_sphere_collision_error(y[sphere_idx*4], es, local_out);
+
+                collision_penetration_distance = collision_penetration_distance + local_out[0];
+                collision_penetration_jac[0] = collision_penetration_jac[0] + local_out[1];
+                collision_penetration_jac[1] = collision_penetration_jac[1] + local_out[2];
+                collision_penetration_jac[2] = collision_penetration_jac[2] + local_out[3];
+            }
+            // now do sphere_cuboid_collision_code
+            for (const auto &ec : environment.cuboids)
+            {
+
+                // compute collision penetration distance and jacobian
+
+                auto local_out = FloatVector<rake, 4>::fill(0.0f);
+                sphere_cuboid_collision_error(y[sphere_idx*4], ec, local_out);
+
+                collision_penetration_distance = collision_penetration_distance + local_out[0];
+                collision_penetration_jac[0] = collision_penetration_jac[0] + local_out[1];
+                collision_penetration_jac[1] = collision_penetration_jac[1] + local_out[2];
+                collision_penetration_jac[2] = collision_penetration_jac[2] + local_out[3];
+            }
+
+            // now propagate the jacobian properly
+            for(auto i=0U; i < dimension; i++)
+            {
+                out[sphere_idx * dimension + i] =
+                    collision_penetration_jac[0] * y[n_spheres * 4 + (3 * sphere_idx + 0) * dimension + i] +
+                    collision_penetration_jac[1] * y[n_spheres * 4 + (3 * sphere_idx + 1) * dimension + i] +
+                    collision_penetration_jac[2] * y[n_spheres * 4 + (3 * sphere_idx + 2) * dimension + i];
+            }
+            out[n_spheres * dimension + sphere_idx] = collision_penetration_distance;
+
+        }
+    }
+
+    template <std::size_t rake, typename InputVector, typename OutputVector>
+    static inline auto solve_sph_env_error_lm_inner(const InputVector &x, OutputVector &out)
+    {
+        std::array<FloatVector<rake, 1>, {{solve_sphere_env_function_lm_outer_code_vars}}> v;
+        std::array<FloatVector<rake, 1>, {{solve_sphere_env_function_lm_outer_code_output}}> y;
+
+        {{solve_sphere_env_function_lm_outer_code}}
+
+        for(size_t i = 0; i < {{solve_sphere_env_function_lm_outer_code_output}}; i++)
             out[i] = y[i];
     }
 
     template <std::size_t rake, typename InputVector, typename OutputVector>
-    static inline auto solve_self_collision_error_lm_outer(const InputVector &x, OutputVector &out)
+    static inline auto solve_sph_env_error_lm_outer(const InputVector &x, OutputVector &out)
     {
-        std::array<FloatVector<rake, 1>, {{solve_self_collision_error_lm_outer_code_vars}}> v;
-        std::array<FloatVector<rake, 1>, {{solve_self_collision_error_lm_outer_code_output}}> y;
+        std::array<FloatVector<rake, 1>, {{solve_sphere_env_function_lm_outer_code_vars}}> v;
+        std::array<FloatVector<rake, 1>, {{solve_sphere_env_function_lm_outer_code_output}}> y;
 
-        {{solve_self_collision_error_lm_outer_code}}
+        {{solve_sphere_env_function_lm_outer_code}}
 
-        for(size_t i = 0; i < {{solve_self_collision_error_lm_outer_code_output}}; i++)
+        for(size_t i = 0; i < {{solve_sphere_env_function_lm_outer_code_output}}; i++)
             out[i] = y[i];
     }
 
     template <std::size_t rake, typename InputVector, typename OutputVector>
-    static inline auto solve_self_collision_error_gradient_descent(const InputVector &x, OutputVector &out)
+    static inline auto solve_sph_env_error_gradient_descent(const InputVector &x, OutputVector &out)
     {
-        std::array<FloatVector<rake, 1>, {{solve_self_collision_error_gradient_descent_code_vars}}> v;
-        std::array<FloatVector<rake, 1>, {{solve_self_collision_error_gradient_descent_code_output}}> y;
+        std::array<FloatVector<rake, 1>, {{solve_sphere_env_function_gradient_descent_code_vars}}> v;
+        std::array<FloatVector<rake, 1>, {{solve_sphere_env_function_gradient_descent_code_output}}> y;
 
-        {{solve_self_collision_error_gradient_descent_code}}
+        {{solve_sphere_env_function_gradient_descent_code}}
 
-        for(size_t i = 0; i < {{solve_self_collision_error_gradient_descent_code_output}}; i++)
+        for(size_t i = 0; i < {{solve_sphere_env_function_gradient_descent_code_output}}; i++)
             out[i] = y[i];
     }
 
