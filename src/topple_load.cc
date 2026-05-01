@@ -59,32 +59,32 @@ struct ToppleNN
       // each matrix is stored in a single line
         
       auto rdata = assign_line_to_matrix(file);
-      ADMatrixXs layer_1_w =  Eigen::Map<ADMatrixXs>(rdata.data(), 6 * dof, 64);
+      ADMatrixXs layer_1_w =  Eigen::Map<ADMatrixXs>(rdata.data(), 6 * dof, 32);
 
       rdata = assign_line_to_matrix(file);
-      ADMatrixXs layer_1_b =  Eigen::Map<ADMatrixXs>(rdata.data(), 1, 64);
+      ADMatrixXs layer_1_b =  Eigen::Map<ADMatrixXs>(rdata.data(), 1, 32);
+
+    //   rdata = assign_line_to_matrix(file);
+    //   ADMatrixXs layer_2_w =  Eigen::Map<ADMatrixXs>(rdata.data(), 128, 128);
+    //   rdata = assign_line_to_matrix(file);
+    //   ADMatrixXs layer_2_b =  Eigen::Map<ADMatrixXs>(rdata.data(), 1, 128);
 
       rdata = assign_line_to_matrix(file);
-      ADMatrixXs layer_2_w =  Eigen::Map<ADMatrixXs>(rdata.data(), 64, 64);
+      ADMatrixXs layer_3_w =  Eigen::Map<ADMatrixXs>(rdata.data(), 32, 6 * dof + 1);
       rdata = assign_line_to_matrix(file);
-      ADMatrixXs layer_2_b =  Eigen::Map<ADMatrixXs>(rdata.data(), 1, 64);
-
-      rdata = assign_line_to_matrix(file);
-      ADMatrixXs layer_3_w =  Eigen::Map<ADMatrixXs>(rdata.data(), 64, 4 * dof + 1);
-      rdata = assign_line_to_matrix(file);
-      ADMatrixXs layer_3_b =  Eigen::Map<ADMatrixXs>(rdata.data(), 1, 4 * dof + 1);
+      ADMatrixXs layer_3_b =  Eigen::Map<ADMatrixXs>(rdata.data(), 1, 6 * dof + 1);
 
       // read from file
       layer_weights.push_back(layer_1_w);
-      layer_weights.push_back(layer_2_w);
+    //   layer_weights.push_back(layer_2_w);
       layer_weights.push_back(layer_3_w);
 
       layer_biases.push_back(layer_1_b);
-      layer_biases.push_back(layer_2_b);
+    //   layer_biases.push_back(layer_2_b);
       layer_biases.push_back(layer_3_b);
 
       inp_size = 6 * dof;
-      out_size = 4 * dof + 1;
+      out_size = 6 * dof + 1;
       std::cout << "Completed construction with " << dof << std::endl;
 
     }
@@ -122,34 +122,48 @@ auto trace_forward(
     // for (auto i = 0U; i < fnn_module.inp_size; ++i)
     //     ix[i] = ad_x[i];
 
+    // excuse this disgustingness
     auto x = ad_x.transpose();
     std::cout << x.rows() << ", " << x.cols() << std::endl;
     ADCG zero(0.0);
 
-    for(auto i=0u; i < fnn_module.layer_weights.size(); i++)
-    {
-        std::cout << i << " " << x << std::endl;
-        std::cout << fnn_module.layer_biases[i] << std::endl;
-        x = x * fnn_module.layer_weights[i] + fnn_module.layer_biases[i];
-        if (i < fnn_module.layer_weights.size() - 1) {
-            for(auto j=0; j < x.size(); j++)
-                x(j) = CondExpGe(x(j), zero, x(j), x(j) * 0.25);
-        }
-    }
+    ADVectorXs ad_h1(32);
+    auto h1 = ad_h1.transpose();
+
+    ADVectorXs ad_y(36);
+    auto y = ad_y.transpose();
+
+    h1 = x * fnn_module.layer_weights[0] + fnn_module.layer_biases[0];
+    for(auto i=0; i < h1.size(); i++)
+        h1(i) = CondExpGe(h1(i), zero, h1(i), zero);
+
+    y = h1 * fnn_module.layer_weights[1] + fnn_module.layer_biases[1];
+
+    // for(auto i=0u; i < fnn_module.layer_weights.size(); i++)
+    // {
+    //     std::cout << i << " " << x << std::endl;
+    //     std::cout << fnn_module.layer_biases[i] << std::endl;
+    //     x = x * fnn_module.layer_weights[i] + fnn_module.layer_biases[i];
+    //     if (i < fnn_module.layer_weights.size() - 1) {
+    //         for(auto j=0; j < x.size(); j++)
+    //             x(j) = CondExpGe(x(j), zero, x(j), zero);
+    //     }
+    // }
 
 
     std::size_t n_out = fnn_module.out_size;
-
+    std::cout << n_out << std::endl;
+    std::cout << y.size() << std::endl;
     ADVectorXs data(n_out);
 
     for (auto i=0U; i < n_out; i++)
-        data[i] = x(i);
-    
+        data[i] = y(i);
 
+    
     // trace_frame(info.end_effector_index, ad_data, data, n_spheres_data + n_bounding_spheres_data);
 
     // Create the AD function
-    ADFun<CGD> topple_nn(ad_x, data);
+    ADFun<CGD> topple_nn(ad_x, data); // seg fault?
 
     CodeHandler<double> handler;
     CppAD::vector<CGD> ind_vars(fnn_module.inp_size);
@@ -162,7 +176,7 @@ auto trace_forward(
 
     std::ostringstream function_code;
     handler.generateCode(function_code, langC, result, nameGen);
-
+    
     return Traced{function_code.str(), handler.getTemporaryVariableCount(), n_out};
 }
 
