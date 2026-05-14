@@ -180,6 +180,88 @@ auto trace_forward(
     return Traced{function_code.str(), handler.getTemporaryVariableCount(), n_out};
 }
 
+auto trace_forward_and_backward(
+    const ToppleNN &fnn_module
+)
+{
+
+    ADVectorXs ad_x(fnn_module.inp_size);
+    for (auto i = 0U; i < fnn_module.inp_size; ++i)
+        ad_x[i] = ADCG(0.0);
+
+    Independent(ad_x);
+
+    // auto x = ad_x;
+    // ADVectorXs ix(fnn_module.inp_size);
+    // for (auto i = 0U; i < fnn_module.inp_size; ++i)
+    //     ix[i] = ad_x[i];
+
+    // excuse this disgustingness
+    auto x = ad_x.transpose();
+    std::cout << x.rows() << ", " << x.cols() << std::endl;
+    ADCG zero(0.0);
+
+    ADVectorXs ad_h1(32);
+    auto h1 = ad_h1.transpose();
+
+    ADVectorXs ad_y(36);
+    auto y = ad_y.transpose();
+
+    h1 = x * fnn_module.layer_weights[0] + fnn_module.layer_biases[0];
+    for(auto i=0; i < h1.size(); i++)
+        h1(i) = CondExpGe(h1(i), zero, h1(i), zero);
+
+    y = h1 * fnn_module.layer_weights[1] + fnn_module.layer_biases[1];
+
+    // for(auto i=0u; i < fnn_module.layer_weights.size(); i++)
+    // {
+    //     std::cout << i << " " << x << std::endl;
+    //     std::cout << fnn_module.layer_biases[i] << std::endl;
+    //     x = x * fnn_module.layer_weights[i] + fnn_module.layer_biases[i];
+    //     if (i < fnn_module.layer_weights.size() - 1) {
+    //         for(auto j=0; j < x.size(); j++)
+    //             x(j) = CondExpGe(x(j), zero, x(j), zero);
+    //     }
+    // }
+
+
+    std::size_t n_out = 1; // we care only about time, the last entry
+    std::cout << n_out << std::endl;
+    std::cout << y.size() << std::endl;
+    ADVectorXs data(n_out);
+
+    data[0] = y(fnn_module.out_size - 1); // time is the last entry
+
+    // for (auto i=0U; i < n_out; i++)
+    //     data[i] = y(i);
+
+    
+    // trace_frame(info.end_effector_index, ad_data, data, n_spheres_data + n_bounding_spheres_data);
+
+    // Create the AD function
+    ADFun<CGD> topple_nn(ad_x, data); // seg fault?
+
+    CodeHandler<double> handler;
+    CppAD::vector<CGD> ind_vars(fnn_module.inp_size);
+    handler.makeVariables(ind_vars);
+
+    CppAD::vector<CGD> result = topple_nn.Forward(0, ind_vars);
+    CppAD::vector<CGD> jac = topple_nn.Jacobian(ind_vars);
+
+    // insert jac at the end of result flattened
+    std::move(jac.begin(), jac.end(), std::back_inserter(result));
+
+    const size_t n_result = result.size();
+
+    LanguageCCustom<double> langC("double");
+    LangCDefaultVariableNameGenerator<double> nameGen;
+
+    std::ostringstream function_code;
+    handler.generateCode(function_code, langC, result, nameGen);
+    
+    return Traced{function_code.str(), handler.getTemporaryVariableCount(), n_result};
+}
+
 
 int main(int argc, char **argv)
 {
@@ -250,6 +332,11 @@ int main(int argc, char **argv)
     data["forward_code"] = traced_forward_code.code;
     data["forward_code_vars"] = traced_forward_code.temp_variables;
     data["forward_code_output"] = traced_forward_code.outputs;
+
+    auto traced_forward_and_backward_code = trace_forward_and_backward(fnn_module);
+    data["forward_and_backward_code"] = traced_forward_and_backward_code.code;
+    data["forward_and_backward_code_vars"] = traced_forward_and_backward_code.temp_variables;
+    data["forward_and_backward_code_output"] = traced_forward_and_backward_code.outputs;
 
     inja::Environment env;
 

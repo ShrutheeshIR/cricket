@@ -960,6 +960,112 @@ auto trace_solve_tsr_function_jac_t(
 }
 
 
+inline static int comb(int n, int k) {
+    int n_fact = 1;
+    int k_fact = 1;
+    int n_k_fact = 1;
+
+    for (int i = 1; i <= n; i++) {
+        if (i <= k) {
+            k_fact *= i;
+        }
+
+        if (i <= (n - k)) {
+            n_k_fact *= i;
+        }
+        n_fact *= i;
+    }
+    return n_fact / (k_fact * n_k_fact);
+}
+
+template<typename T>
+inline static auto ipow(T base, int exp) -> T {
+    T result = T(1);
+    for (int i = 0; i < exp; i++) {
+        result *= base;
+    }
+    return result;
+}
+
+auto trace_bezier_evaluate(
+    const RobotInfo &info,
+    size_t degree = 7
+) -> Traced
+{
+        auto nq = info.model.nq;
+        size_t num_anchors = degree + 1;
+
+
+        const size_t num_inp = num_anchors * nq + 2; // control points + T + t
+        // control points -- degree + 1 anchors, each with nq dimensions
+        // T is the total time for the bezier curve, t is the current time at which we want to evaluate.
+
+        ADVectorXs ad_inp(num_inp);
+
+        // first compute the combination coefficients for the given degree
+        ADVectorXs comb_coeffs(num_anchors);
+        for (size_t i = 0; i < num_anchors; i++) {
+            comb_coeffs[i] = ADCG(comb(degree, i));
+        }
+
+        for (auto i = 0U; i < num_inp; ++i)
+            ad_inp[i] = ADCG(0.0);
+        
+        Independent(ad_inp);
+        // Now construct your row_matrix
+        ADMatrixXs anchors(num_anchors, nq);
+        for (size_t i = 0; i < num_anchors; i++) {
+            for (size_t j = 0; j < nq; j++) {
+                anchors(i, j) = ad_inp[i * nq + j];
+            }
+        }
+        auto T = ad_inp[num_anchors * nq];
+        auto t = ad_inp[num_anchors * nq + 1];
+
+        std::cout << "comb coeffs: " << comb_coeffs.transpose() << std::endl;
+        std::cout << "anchors: " << anchors << std::endl;
+        std::cout << "T: " << T << ", t: " << t << std::endl;
+
+        // write the following function
+        // state evaluate(float t) {
+        //     state P(1, this->anchors.rows());
+        //     for (int i = 0; i <= this->degree; i++) {
+        //         P(0, i) = ((this->combs[i] * 
+        //         (pow(1.0 - t * 1.0, this->degree - i)) * 
+        //         (pow(1.0 * t, i))));
+        //     }
+        //     state s = P * this->anchors;
+        //     return s;
+        // }
+        // where
+        // anchor is a matrix in row major format 
+        // and state is a vector of size num_anchors
+        ADVectorXs P(num_anchors);
+        for (size_t i = 0; i < num_anchors; i++) {
+            P[i] = comb_coeffs[i] * ipow(1.0 - t * 1.0, degree - i) * ipow(t, static_cast<int>(i));
+        }
+        ADVectorXs data = P.transpose() * anchors;
+        std::size_t n_out = nq;
+
+        // Create the AD function
+        ADFun<CGD> bezier_evaluate_func(ad_inp, data);
+
+        CodeHandler<double> handler;
+        CppAD::vector<CGD> ind_vars(num_inp);
+        handler.makeVariables(ind_vars);
+
+        CppAD::vector<CGD> result = bezier_evaluate_func.Forward(0, ind_vars);
+
+        LanguageCCustom<double> langC("double");
+        LangCDefaultVariableNameGenerator<double> nameGen;
+
+        std::ostringstream function_code;
+        handler.generateCode(function_code, langC, result, nameGen);
+
+        return Traced{function_code.str(), handler.getTemporaryVariableCount(), n_out};
+
+}
+
 // if\s*\(\s*(v\[\d+\])\s*<\s*([0-9]*\.?[0-9]*)\s*\)\n\s*\{\s*\1\s*=\s*\2;\n\s*\}\n\s*else\s*\n\s*\{\s*\1\s*=\s*\1;\n\s*\} --> $1 = max($1, $2);
 // if\s*\(\s*([0-9]*\.?[0-9]*)\s*<\s*(v\[\d+\])\s*\)\n\s*\{\s*\2\s*=\s*\1;\n\s*\}\n\s*else\s*\n\s*\{\s*\2\s*=\s*\2;\n\s*\} --> $2 = min($2, $1);
 
@@ -1086,6 +1192,11 @@ int main(int argc, char **argv)
     data["trace_full_tsr_project_code"] = traced_trace_full_tsr_project_code.code;
     data["trace_full_tsr_project_code_vars"] = traced_trace_full_tsr_project_code.temp_variables;
     data["trace_full_tsr_project_code_output"] = traced_trace_full_tsr_project_code.outputs;
+
+    data["bezier_evaluate_code"] = trace_bezier_evaluate(robot, 7).code;
+    data["bezier_evaluate_code_vars"] = trace_bezier_evaluate(robot, 7).temp_variables;
+    data["bezier_evaluate_code_output"] = trace_bezier_evaluate(robot, 7).outputs;
+
 
     // auto traced_tsr_error_function_scalar_grad_code  = trace_tsr_error_function_scalar_grad(robot);
     // data["tsr_error_function_scalar_grad_code"] = traced_tsr_error_function_scalar_grad_code.code;

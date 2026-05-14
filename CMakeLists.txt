@@ -35,7 +35,7 @@ find_package(Eigen3 REQUIRED)
 find_package(CGAL REQUIRED)
 find_package(fmt REQUIRED)
 find_package(nlohmann_json REQUIRED)
-
+find_package(tinyxml2 REQUIRED)
 # inja may or may not be installed
 find_package(inja QUIET)
 if(NOT inja_FOUND)
@@ -84,8 +84,10 @@ target_link_libraries(topple_load
     ${cppad_LIBRARIES}
     pantor::inja
     nlohmann_json::nlohmann_json
+    CGAL::CGAL
     fmt::fmt
     cxxopts::cxxopts
+    tinyxml2::tinyxml2
 )
 
 # Add compiler definitions
@@ -126,8 +128,3 @@ install(TARGETS topple_load
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   COMPONENT Runtime
 )
-
-# install(TARGETS test_robot test_cholesky
-#   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-#   COMPONENT Runtime
-# )
