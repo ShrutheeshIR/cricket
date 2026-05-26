@@ -267,6 +267,21 @@ struct {{name}}
 
     }
 
+    template <std::size_t rake, typename InputVector>
+    static inline auto bezier(const InputVector &x) noexcept
+    {
+        FloatVector<8, {{bezier_evaluate_code_vars}}> v;
+        FloatVector<8, {{bezier_evaluate_code_output}}> y;
+        {{bezier_evaluate_code}}
+
+        ConfigurationBlock<rake> out;
+
+        for(auto i=0U;i<{{bezier_evaluate_code_output}};i++)
+            out[i] = y[i];
+        
+        return out;
+
+    }
 
 
 
