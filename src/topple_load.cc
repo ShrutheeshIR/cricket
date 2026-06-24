@@ -246,11 +246,13 @@ auto trace_forward(
     std::cout << "Starting forward pass" << std::endl;
     for (auto i = 1; i < layers.size(); i++)
     {
-        layers[i] = layers[i - 1] * fnn_module.layer_weights[2 * (i - 1)] + fnn_module.layer_biases[2 * (i - 1)];
+        auto residual = layers[i - 1];
+        layers[i] = residual * fnn_module.layer_weights[2 * (i - 1)] + fnn_module.layer_biases[2 * (i - 1)];
         layers[i] = layer_norm(layers[i]) * fnn_module.layer_weights[2 * (i - 1) + 1] + fnn_module.layer_biases[2 * (i - 1) + 1];
         for(auto j=0; j < layers[i].size(); j++) {
             layers[i](j) = CondExpGe(layers[i](j), zero, layers[i](j), zero);
         }
+        layers[i] = residual + layers[i];
     }
     y = layers.back() * fnn_module.layer_weights.back() + fnn_module.layer_biases.back();
     std::cout << "Finished forward pass" << std::endl;

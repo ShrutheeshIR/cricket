@@ -69,13 +69,18 @@ list(APPEND cppadcg_INCLUDE_DIRS
 # Create the executable
 # add_executable(fkcc_gen src/fkcc_gen.cc)
 # add_executable(test_cholesky src/test_cholesky_decomp.cc)
-# add_executable(test_robot src/test_robot.cc)
+add_executable(test_topple src/test_topple.cc)
 add_executable(topple_load src/topple_load.cc)
 
 # Set include directories
 target_include_directories(topple_load PRIVATE
     ${cppad_INCLUDE_DIRS}
     ${cppadcg_INCLUDE_DIRS}
+)
+
+target_include_directories(test_topple PRIVATE
+  ${cppad_INCLUDE_DIRS}
+  ${cppadcg_INCLUDE_DIRS}
 )
 
 # Link libraries
@@ -90,8 +95,23 @@ target_link_libraries(topple_load
     tinyxml2::tinyxml2
 )
 
+  target_link_libraries(test_topple
+    Eigen3::Eigen
+    ${cppad_LIBRARIES}
+    pantor::inja
+    nlohmann_json::nlohmann_json
+    CGAL::CGAL
+    fmt::fmt
+    cxxopts::cxxopts
+    tinyxml2::tinyxml2
+  )
+
 # Add compiler definitions
 target_compile_definitions(topple_load PRIVATE
+)
+
+target_compile_definitions(test_topple PRIVATE
+  TOPPLE_CRICKET_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
 # target_link_libraries(test_cholesky
